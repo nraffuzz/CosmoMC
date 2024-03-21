@@ -1,7 +1,7 @@
     module CMBlikes
     !Pseudo-Cl (or other C_l esimator) based likelihood approximation for cut sky with polarization
     !AL Mar 2010 - fixed bug using on E, added support for multiple input simulated Chat for bias testing
-    !Apr 2011, added fullsky_exact_fksy
+    !Apr 2011, added fullsky_exact_fsky
     !Mar 2014  renamed from Planck_like, removed low-L likelihood to separate file
     !Updated file structure, allows for binned HL likelihoods. Everything now in L(L+1)CL/2pi
     !2014 linear correction bin windows (e.g. for Planck lensing likelihood)
@@ -61,7 +61,7 @@
         integer, allocatable :: cl_use_index(:)
         integer pcl_lmin, pcl_lmax !The range of l in data files (esp. covmat and/or window files)
         integer like_approx
-        real(mcp) :: fullsky_exact_fksy = 1 ! only used for testing with exactly fullsky
+        real(mcp) :: fullsky_exact_fsky = 1 ! only used for testing with exactly fullsky
         integer :: calibration_index = 0 !if non-zero, index into nuisance parameter array of global calibration of TEB
         real(mcp) :: log_calibration_prior = -1 ! if > 0 & calibration_index is set, add a prior to the LnL
         real(mcp), dimension(:,:), allocatable :: ClFiducial, ClNoise, ClHat
@@ -150,10 +150,11 @@
     logical, intent(inout), optional :: hasKey
     real(mcp), allocatable,intent(out) :: Cl(:,:)
     character(LEN=:), allocatable :: tmp, incols, order, filename
-    integer ix, l,ll
-    integer, allocatable :: cols(:)
+    integer :: ix, l,ll
+    integer, allocatable :: cols(:) !cols is a list filled with indeces of fields TT=1,TE=2,EE=3,TB=4,EB=5,BB=6,TV=7,EV=8,BV=9,VV=10
+    !fields not present in the likelihood are denoted with 0, otherwise the index number is used
     real(mcp), allocatable :: tmp_ar(:)
-    integer status, norder
+    integer :: status, norder
     Type(TTextFile) :: F
 
     filename =Ini%ReadRelativeFileName(basename//'_file', NotFoundFail=.not. present(hasKey))
@@ -161,7 +162,7 @@
         hasKey = filename /=''
         if (.not. hasKey) return
     end if
-    allocate(Cl(this%ncl,this%bin_min:this%bin_max))
+    allocate(Cl(this%ncl,this%bin_min:this%bin_max)) !ncl=10 is the number of possible fields TT,TE,EE,TB,EB,BB,TV,EV,BV,VV
     Order = Ini%Read_String(basename//'_order')
 
     if (Order=='') then
@@ -172,7 +173,10 @@
     end if
     norder = this%GetColsFromOrder(incols, cols)-1
     allocate(tmp_ar(norder))
-
+    !write(*,*) 'incols = ', incols !!NR
+    !write(*,*) 'norder = ', norder !!NR
+    !write(*,*) 'cols = ', cols !!NR
+    
     Cl=0
     do while (F%ReadNextContentLine(filename,tmp))
         read(tmp,*, iostat=status) l, tmp_ar
@@ -469,7 +473,7 @@
     class(TSettingIni) :: Ini
     integer ix, i
     character(LEN=:), allocatable :: S
-    integer l,j
+    integer l,j, ell !!NR ell
     logical :: cl_fiducial_includes_noise, includes_noise
     Type(TStringList) :: map_fields, fields_use, maps_use
     logical use_theory_field(tot_theory_fields)
@@ -481,6 +485,7 @@
     if (.not. Ini%TestEqual('dataset_format','CMBLike2',EmptyOK=.true.)) call MpiStop('CMBLikes wrong dataset_format')
 
     S = Ini%Read_String('map_names')
+    !write(*,*) 'map names ', S !!NR
     this%has_map_names = S/=''
     if (this%has_map_names) then
         !E.g. have multiple frequencies for given measurement
@@ -504,6 +509,7 @@
     end if
 
     S = Ini%Read_String('fields_use')
+    !write(*,*) 'fields used ', S !!NR
     if (S/='') then
         use_theory_field = .false.
         call fields_use%SetFromString(S)
@@ -517,6 +523,7 @@
 
     allocate(this%use_map(this%map_names%Count))
     S = Ini%Read_String('maps_use')
+    !write(*,*) 'maps used ', S !!NR
     if (S/='') then
         if (any(.not. use_theory_field)) &
             print *, 'CMBlikes WARNING: maps_use overrides fields_use'
@@ -591,7 +598,10 @@
             call this%used_map_order%Add(this%map_names%Item(i))
         end if
     end do
+    !write(*,*) 'ncl prima ', this%ncl !!NR
     this%ncl = (this%nmaps*(this%nmaps+1))/2
+    !write(*,*) 'ncl dopo ', this%ncl !!NR
+    !write(*,*) 'nmaps ', this%nmaps !!NR
 
     this%pcl_lmin = Ini%Read_Int('cl_lmin')
     this%pcl_lmax = Ini%Read_Int('cl_lmax')
@@ -645,14 +655,30 @@
         call this%ReadClArr(Ini,'cl_fiducial',this%ClFiducial)
     else if (this%like_approx == like_approx_fullsky_exact) then
         !Exact like
-        call Ini%Read('fullsky_exact_fksy', this%fullsky_exact_fksy)
+        call Ini%Read('fullsky_exact_fsky', this%fullsky_exact_fsky)
     end if
 
     includes_noise = Ini%Read_Logical('cl_hat_includes_noise',.false.)
     if (this%like_approx/=like_approx_fid_gaussian .or. includes_noise) then
         call this%ReadClArr(Ini, 'cl_noise',this%ClNoise)
+
+        ! write(*,*) 'writing clnoise.txt' !!NR
+        ! open(107, file='clnoise.txt', status='replace')
+        ! write (107,'("#",1A'//Trim('4')//'," ",*(A15))') 'L','TT','EE'!,'BB','VV'
+        ! do ell=2,1350 !! L TT EE BB VV
+        ! write(107,'(1I5,4E20.12)') ell, this%ClNoise(1,ell), this%ClNoise(3,ell)!, this%ClNoise(6,ell), this%ClNoise(10,ell)
+        ! end do
+        ! close(107) !!NR
+
         if (.not. includes_noise) then
             this%ClHat =  this%ClHat + this%ClNoise
+            ! write(*,*) 'writing clhat_obs.txt OBSERVED' !!NR
+            ! open(107, file='clhat_obs.txt', status='replace')
+            ! write (107,'("#",1A'//Trim('4')//'," ",*(A15))') 'L','TT','EE','TE','w/ noise'
+            ! do ell=2,1350
+            !     write(107,'(1I5,4E20.12)') ell, this%ClHat(1,ell), this%ClHat(3,ell), this%ClHat(2,ell)
+            ! end do
+            ! close(107) !!NR
         else if (this%like_approx==like_approx_fid_gaussian) then
             this%ClHat =  this%ClHat - this%ClNoise
             deallocate(this%ClNoise)
@@ -966,17 +992,30 @@
     end subroutine ElementsToMatrix
 
     function ExactChiSq(this, C,Chat,l)
+        ! this function provides the exact likelihood !!NR
+        ! arguments are:
+        ! - C is the matrix of theory(moved into M)
+        ! - Chat is the observed matrix to be "compared" with theory (either C or Chat envelops noise) 
+        ! - l is the multipole moment !!NR
     class(TCMBLikes) :: this
     real(mcp), intent(in) :: C(this%nmaps,this%nmaps), Chat(this%nmaps,this%nmaps)
     integer, intent(in) :: l
+    integer :: i,j
     real(mcp) ExactChiSq
     real(mcp) M(this%nmaps,this%nmaps)
 
     M = C
-    call Matrix_root(M,this%nmaps,-0.5_mcp)
-    M = matmul(M,matmul(Chat,M))
-    ExactChiSq = (2*l+1)*this%fullsky_exact_fksy*(Matrix_Trace(M) - this%nmaps - MatrixSym_LogDet(M) )
-
+    call Matrix_root(M,this%nmaps,-0.5_mcp) !M = C^(-0.5) = 1/sqrt(C)
+    M = matmul(M,matmul(Chat,M)) !M = 1/sqrt(C) * Chat * 1/sqrt(C) = Chat/C, C theory, Chat observed
+    ExactChiSq = (2*l+1)*this%fullsky_exact_fsky*(Matrix_Trace(M) - this%nmaps - MatrixSym_LogDet(M) )
+    
+    ! if (l .eq. 500) then
+    !     write(*,*) '1) Matrix_Trace(M) =', Matrix_Trace(M) 
+    !     write(*,*) '2) LogDet(M)       =', MatrixSym_LogDet(M)
+    !     write(*,*) '3) chi2 for l=500  =', ExactChiSq
+    ! else
+    !     write(*,*) '----> Exact chi2 = ', ExactChiSq !!NR
+    ! end if !!NR
     end function ExactChiSq
 
     subroutine GetBinnedMapCls(this, MapCls, C, bin)
@@ -1195,12 +1234,14 @@
     do bin = this%bin_min, this%bin_max
         if (this%binned .or. bin_test) then
             if (this%like_approx == like_approx_fullsky_exact) call mpiStop('CMBLikes: exact like cannot be binned!')
-            call this%GetBinnedMapCls(TheoryCls, C, bin)
+            call this%GetBinnedMapCls(TheoryCls, C, bin) !!NR non si passa di qui, testato
         else
             if (this%nmaps /= this%nmaps_required) call MpiStop('CMBlikes: Unbinned must have required==used')
+            !!write(*,*) 'passo di qui' !!NR
             do i=1, this%nmaps
                 do j=1, i
                     if (allocated(TheoryCls(i,j)%CL)) then
+                        !write(*,*) 'likelihood passa qui'
                         C(i,j) =TheoryCLs(i,j)%CL(bin)
                     else
                         C(i,j)=0
@@ -1209,12 +1250,19 @@
                 end do
             end do
         end if
+
         if (allocated(this%NoiseM)) then
             C = C + this%NoiseM(bin)%M
+            ! if (bin .eq. 500) then !!NR
+            !     write(*,*) 'For ell = 500'
+            !     write(*,*) 'C + noise =', C
+            !     write(*,*) 'ChatM + noise =', this%ChatM(bin)%M
+            ! endif !!NR
         end if
 
         if (this%like_approx == like_approx_fullsky_exact) then
-            chisq = chisq  + this%ExactChisq(C,this%ChatM(bin)%M,bin)
+            chisq = chisq  + this%ExactChisq(C,this%ChatM(bin)%M,bin) !write(*,*) 'passa da exactchisq'
+            
             cycle
         else if (this%like_approx == like_approx_HL) then
             call this%Transform(C, this%ChatM(bin)%M, this%sqrt_fiducial(bin)%M)
@@ -1231,11 +1279,11 @@
 
     if (this%like_approx /= like_approx_fullsky_exact) chisq = chisq + Matrix_QuadForm(this%inv_covariance,BigX)
 
-    if (this%log_calibration_prior > 0 .and. this%calibration_index > 0) &
+    if (this%log_calibration_prior > 0 .and. this%calibration_index > 0) & !!NR qui non entra
         chisq = chisq +  (log(DataParams(this%calibration_index))/this%log_calibration_prior)**2
 
     LogLike = chisq/2
-
+    !write(*,*) '******* LogLike = chisq/2 = ', LogLike !!NR
     end function CMBLikes_LogLike
 
 
@@ -1349,4 +1397,3 @@
     end function TSmica_planck_derivedParameters
 
     end module smica_planck
-

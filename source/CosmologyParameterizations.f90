@@ -22,6 +22,7 @@
         real(mcp) :: sterile_mphys_max = 10 !maximum allowed physical mass of thermal sterile neutrino in eV
         real(mcp) :: use_min_zre = 0._mcp
         real(mcp) :: zre_prior_mean = 0._mcp, zre_prior_std = 0._mcp
+        real(mcp) :: Ase2tau_prior_mean = 0._mcp, Ase2tau_prior_std = 0._mcp !!NR
         integer :: num_derived = 0
     contains
     procedure :: ParamArrayToTheoryParams => TP_ParamArrayToTheoryParams
@@ -72,6 +73,11 @@
     if (prior/='') then
         read(prior,*) this%zre_prior_mean, this%zre_prior_std
     end if
+    prior => Ini%Read_String('Ase2tau_prior',NotFoundFail=.false.) !!NR prior A_s e^{-2 tau}
+    if (prior/='') then
+        read(prior,*) this%Ase2tau_prior_mean, this%Ase2tau_prior_std
+        !write(*,*) 'passi qui Ase2tau ', this%Ase2tau_prior_mean, this%Ase2tau_prior_std
+    end if !!NR
 
     call this%Initialize(Ini,Names, 'paramnames/params_CMB.paramnames', Config)
     if (CosmoSettings%bbn_consistency) call Names%Add('paramnames/derived_bbn.paramnames')
@@ -83,7 +89,7 @@
     call Names%AddDerivedRange('H0', this%H0_min, this%H0_max)
     this%num_derived = Names%num_derived
     !set number of hard parameters, number of initial power spectrum parameters
-    call this%SetTheoryParameterNumbers(16,last_power_index)
+    call this%SetTheoryParameterNumbers(18,last_power_index)   !!NR this was 16
 
     end subroutine TP_Init
 
@@ -105,6 +111,11 @@
         if (this%H0_prior_mean/=0._mcp) then
             TP_NonBaseParameterPriors = ((CMB%H0 - this%H0_prior_mean)/this%H0_prior_std)**2/2
         end if
+        !!NR prior for A_s e{-2 tau}
+        if (this%Ase2tau_prior_mean/=0._mcp) then
+            TP_NonBaseParameterPriors = TP_NonBaseParameterPriors + ((CMB%InitPower(As_index)*exp(-2*CMB%tau) - this%Ase2tau_prior_mean)/this%Ase2tau_prior_std)**2/2
+            write(*,*) 'Differenza prior As e^-2tau', CMB%InitPower(As_index)*exp(-2*CMB%tau) - this%Ase2tau_prior_mean
+        end if  !!NR prior for A_s e{-2 tau}
         if (this%zre_prior_mean/=0._mcp) then
             TP_NonBaseParameterPriors = TP_NonBaseParameterPriors + ((CMB%zre - this%zre_prior_mean)/this%zre_prior_std)**2/2
         end if
@@ -333,6 +344,8 @@
         CMB%ALens = Params(14)
         CMB%ALensf = Params(15)
         CMB%fdm = Params(16)
+        CMB%fbe = Params(17)  !!NR beta_E, beta_V
+        CMB%fbv = Params(18)
         call SetFast(Params,CMB)
     end if
 
@@ -374,6 +387,8 @@
         CMB%w =    Params%P(5)
         CMB%wa =    Params%P(6)
         CMB%nnu =    Params%P(7)
+        CMB%fbe = 0.0   !NR 
+        CMB%fbv = 0.0   !NR 
 
         CMB%h=CMB%H0/100
         h2 = CMB%h**2
@@ -525,6 +540,5 @@
     end select
 
     end subroutine AP_CalcDerivedParams
-
 
     end module CosmologyParameterizations

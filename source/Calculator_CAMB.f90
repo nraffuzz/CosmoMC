@@ -241,7 +241,7 @@
     class(CMBParams) :: CMB
     class(TTheoryIntermediateCache), pointer :: Info
     class(TCosmoTheoryPredictions) :: Theory
-    integer error,i,j
+    integer :: error,i,j
 
     select type (Info)
     class is (CAMBTransferCache)
@@ -259,6 +259,7 @@
                 if (CosmoSettings%cl_lmax(i,i)>0) then
                     if (any(Theory%cls(i,i)%Cl(:) < 0 )) then
                         error = 1
+                        !write(*,*) '1) FIELD IS', i !, Theory%cls(i,i)%Cl(:)!!NR
                         call MpiStop('Calculator_CAMB: negative C_l (could edit to silent error here)')
                         return
                     end if
@@ -337,6 +338,7 @@
         call this%SetPowersFromCAMB(CMB, Info%State, Theory)
         if (any(Theory%cls(1,1)%Cl(:) < 0 )) then
             error = 1
+            !write(*,*) '2) FIELD IS', i !!NR
             call MpiStop('Calculator_CAMB: negative C_l (could edit to silent error here)')
         end if
         do i=1, min(3,CosmoSettings%num_cls)
@@ -377,22 +379,62 @@
     integer l
     real(mcp) :: highL_norm = 0
     real(mcp) lens_recon_scale, rms
-    integer i,j, lmx, lmaxCL
+    integer :: i,j, lmx, lmaxCL, C_V = 4 !!NR
     integer, save, allocatable :: indicesS(:,:), indicesT(:,:)
+    real(mcp), dimension(:), allocatable :: newCl_E, newCl_TE, newCl_B, CLBB, Cl_VV !!NR
+    integer :: i_F, index_fw3j, myunit
+    real(mcp) :: prefac_cl2dl, currclEE, currclTE, currclBB, currclEE_p1, currclBB_p1, currclEE_m1, currclBB_m1, currclBB_p2, currclBB_m2 !!NR
+    !logical :: CLfile = .true. !!NR flag to print spectra on file cl_out.txt
 
     if (.not. allocated(indicesS)) then
-        allocate(indicesS(3,3))
-        allocate(indicesT(3,3))
-        indicesS=0
-        indicesS(1,1) =  C_Temp
-        indicesS(2,2) =  C_E
+        allocate(indicesS(4,4))   !!NR
+        allocate(indicesT(4,4))   !!NR
+        indicesS = 0
+        indicesS(1,1) = C_Temp
+        indicesS(2,2) = C_E
+        indicesS(4,4) = C_V  !!NR
         indicesT = indicesS
-        indicesT(2,1) =  CT_Cross
-        indicesT(3,3) =  CT_B
-        indicesS(2,1) =  C_Cross
+        indicesT(2,1) = CT_Cross
+        indicesT(3,3) = CT_B
+        indicesS(2,1) = C_Cross
     end if
 
     lens_recon_scale = CMB%InitPower(Aphiphi_index)
+    
+    !!NR
+    if(CosmoSettings%fw3jread .eq. .false.) then
+        if (allocated(CosmoSettings%W1)) deallocate(CosmoSettings%W1)
+        allocate(CosmoSettings%W1(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W1m1)) deallocate(CosmoSettings%W1m1)
+        allocate(CosmoSettings%W1m1(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W1p1)) deallocate(CosmoSettings%W1p1)
+        allocate(CosmoSettings%W1p1(CosmoSettings%lmax_dc))
+
+        if (allocated(CosmoSettings%W2)) deallocate(CosmoSettings%W2)   !!NR aggiunto i Wigner anche per costruire VV
+        allocate(CosmoSettings%W2(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W2p1)) deallocate(CosmoSettings%W2p1)
+        allocate(CosmoSettings%W2p1(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W2m1)) deallocate(CosmoSettings%W2m1)
+        allocate(CosmoSettings%W2m1(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W2p2)) deallocate(CosmoSettings%W2p2)
+        allocate(CosmoSettings%W2p2(CosmoSettings%lmax_dc))
+        if (allocated(CosmoSettings%W2m2)) deallocate(CosmoSettings%W2m2)
+        allocate(CosmoSettings%W2m2(CosmoSettings%lmax_dc))
+        
+        open (newunit=myunit, file=trim(CosmoSettings%infile_fw3j_ee_bb), status='old', action='read')
+        do i_F=1,CosmoSettings%lmax_dc,1
+            read(myunit,*) CosmoSettings%W1(i_F), CosmoSettings%W1p1(i_F), CosmoSettings%W1m1(i_F)
+        enddo
+        close(myunit)
+
+        open (newunit=myunit, file=trim(CosmoSettings%infile_fw3j_vv), status='old', action='read')   !!NR anche fw3j_vv
+        do i_F=1,CosmoSettings%lmax_dc,1
+            read(myunit,*) CosmoSettings%W2(i_F), CosmoSettings%W2p1(i_F), CosmoSettings%W2m1(i_F), CosmoSettings%W2p2(i_F), CosmoSettings%W2m2(i_F)
+        enddo
+        close(myunit)
+        CosmoSettings%fw3jread = .true.
+    endif
+    !!NR
 
     do i=1, min(3,CosmoSettings%num_cls)
         do j= i, 1, -1
@@ -471,6 +513,89 @@
         Theory%tensor_ratio_C10 = 0
         Theory%tensor_AT = 0
     end if
+
+
+!!NR - calcolo i cl modificati
+    if (CosmoSettings%fw3jread .eq. .true.) then  
+        ! if ( (abs(CMB%fbv) .lt. CosmoSettings%tol_dc) ) then 
+        !     CMB%fbv = 0.0
+        ! endif
+        allocate(newCl_E(2:CosmoSettings%lmax_dc))
+        newCl_E = 0
+
+        allocate(newCl_TE(2:CosmoSettings%lmax_dc))
+        newCl_TE = 0
+
+        allocate(newCl_B(2:CosmoSettings%lmax_dc))
+        newCl_B = 0
+
+        allocate(CLBB(0:CosmoSettings%lmax_dc+2))
+        CLBB = 0
+
+        allocate(Cl_VV(2:CosmoSettings%lmax_dc))   !!NR back aggiunto campo VV
+        Cl_VV = 0
+
+        if (CosmoSettings%lmax_tensor .le. CosmoSettings%lmax_dc+2) then
+            CLBB(2:CosmoSettings%lmax_tensor) = cons*State%CLData%Cl_tensor(2:CosmoSettings%lmax_tensor,CT_B)
+        else
+            CLBB(2:CosmoSettings%lmax_dc+2) = cons*State%CLData%Cl_tensor(2:CosmoSettings%lmax_dc+2,CT_B)
+        endif
+
+            do l = 2, CosmoSettings%lmax_dc, 1
+                index_fw3j = l-1
+                prefac_cl2dl =l*(l+1.0)/twopi
+                
+                currclEE = Theory%Cls(2,2)%CL(l)*twopi/l/(l+1.0)
+                currclBB = CLBB(l)*twopi/l/(l+1.0)
+                currclTE = Theory%Cls(2,1)%CL(l)*twopi/l/(l+1.0)
+
+                currclEE_p1 = Theory%Cls(2,2)%CL(l+1)*twopi/((l+2.0)*(l+1.0))
+                currclBB_p1 = CLBB(l+1)*twopi/((l+2.0)*(l+1.0))
+
+                currclEE_m1 = Theory%Cls(2,2)%CL(l-1)*twopi/(l*(l-1.0))
+                currclBB_m1 = CLBB(l-1)*twopi/(l*(l-1.0))
+
+                currclBB_p2 = CLBB(l+2)*twopi/((l+2.0)*(l+3.0))   !!NR
+                if (l .le. 2) then
+                        currclBB_m2 = 0.0
+                else
+                        currclBB_m2 = CLBB(l-2)*twopi/((l-2.0)*(l-1.0))   !!NR
+                endif
+              
+                newCl_E(l) = (currclEE - 1/(2*twopi) * (CMB%fbv+CMB%fbe) * currclEE + 1/(2*twopi) * CMB%fbv * &
+         (CosmoSettings%W1(index_fw3j)*currclEE+CosmoSettings%W1p1(index_fw3j)*currclBB_p1+CosmoSettings%W1m1(index_fw3j)*currclBB_m1)) *prefac_cl2dl
+
+                newCl_B(l) = (currclBB - 1/(2*twopi) * (CMB%fbv+CMB%fbe) * currclBB + 1/(2*twopi) * CMB%fbv * & 
+         (CosmoSettings%W1(index_fw3j)*currclBB+CosmoSettings%W1p1(index_fw3j)*currclEE_p1+CosmoSettings%W1m1(index_fw3j)*currclEE_m1)) *prefac_cl2dl
+
+                newCl_TE(l) = (currclTE - 0.5/(2*twopi) * (CMB%fbv+CMB%fbe) * currclTE) *prefac_cl2dl
+                
+                Cl_VV(l) = CMB%fbe/(twopi/2) * (CosmoSettings%W2p2(index_fw3j)*currclBB_p2 + CosmoSettings%W2p1(index_fw3j)*currclEE_p1 + &
+         CosmoSettings%W2(index_fw3j)*currclBB + CosmoSettings%W2m1(index_fw3j)*currclEE_m1 + CosmoSettings%W2m2(index_fw3j)*currclBB_m2) *prefac_cl2dl
+                !!NR aggiunto spettro in VV
+            enddo !closing l loop
+
+            Theory%Cls(2,2)%CL(2:CosmoSettings%lmax_dc) = newCl_E 
+            Theory%Cls(2,1)%CL(2:CosmoSettings%lmax_dc) = newCl_TE
+            Theory%Cls(4,4)%CL(2:CosmoSettings%lmax_dc) = Cl_VV   !!NR
+            if (allocated(Theory%Cls(3,3)%CL)) Theory%Cls(3,3)%CL(2:CosmoSettings%lmax_dc) = newCl_B + &
+                CosmoSettings%alpha_dl*cons*State%CLData%Cl_lensed(2:CosmoSettings%lmax_dc, CT_B) !!NR alpha_dl is the delensing
+             
+            !write(*,*) 'fbe, fbv ', CMB%fbe, CMB%fbv
+            if (CosmoSettings%CLfile) then !!NR
+                open(107, file='cl_the.txt', status='replace')
+                write(107,'("#",1A'//Trim(IntToStr(4))//'," ",*(A15))') 'L','TT','EE','TE','BB','VV'
+                write(*,*) 'writing cl_the.txt THEORY' !!NR
+                do i=2,5000
+                write(107,'(1I6,5E20.12)') i,Theory%Cls(1,1)%CL(i), Theory%Cls(2,2)%CL(i), Theory%Cls(2,1)%CL(i), Theory%Cls(3,3)%CL(i), Theory%Cls(4,4)%CL(i)
+                end do
+                close(107)           
+                CosmoSettings%CLfile = .false.
+            endif
+            deallocate(newCl_E,newCl_TE,newCl_B,CLBB,Cl_VV) !!NR
+
+        endif
+!!NR
 
     end subroutine CAMBCalc_SetPowersFromCAMB
 
@@ -634,7 +759,7 @@
     if (present(DoReion)) then
         WantReion = DoReion
     else
-        WantReion = .true.
+        WantReion = .true.   !NR this has to be true
     end if
 
     call this%CMBToCAMB(CMB, P)
